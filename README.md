@@ -79,6 +79,22 @@ El script:
 git add music/ && git commit -m "add: <título>" && git push
 ```
 
+## Agregar una playlist de Spotify
+
+```bash
+./add-spotify.sh "https://open.spotify.com/playlist/ID"
+./add-spotify.sh "https://open.spotify.com/playlist/ID" 30   # primeros 30
+```
+
+Cómo funciona: lee la metadata desde el embed público de Spotify
+(sin tocar la API anónima, que se rate-limitea rápido), y para cada track
+busca el match en YouTube vía `yt-dlp ytsearch1:` y lo descarga con
+`add-song.sh` pasando título/artista de Spotify como overrides, así
+`tracks.json` queda con metadata limpia.
+
+Funciona con cualquier playlist pública (o con link "compartir → copiar").
+Las personalizadas tipo Daily Mix también suelen ser accesibles vía embed.
+
 ## Atajos de teclado
 
 | Tecla       | Acción              |
@@ -102,15 +118,40 @@ es necesario.)
 - `file`: nombre del archivo dentro de `music/` (sin la carpeta).
 - `title`, `artist`: lo que se muestra en el player.
 
-## Escalar a más música
+## Escalar a más música (multi-repo)
 
-Cuando el repo se ponga pesado (GitHub limita ~100 MB por archivo y
-recomienda repos < 1 GB), puedes:
+GitHub recomienda repos < 1 GB. Cuando este se acerque al límite, la
+solución no es Git LFS — es crear repos secundarios y enlazarlos desde
+`sources.json`.
 
-- Crear repos adicionales (`mau-player-music-2`, `…-3`, etc.) y enlazarlos
-  desde el sidebar (queda como evolución).
-- O migrar `music/` a Git LFS si solo crece en cantidad de canciones de
-  tamaño normal.
+### Cómo funciona
+
+`sources.json` (en este repo) lista URLs base de repos hermanos:
+
+```json
+[
+  "https://maruizg25.github.io/Mau-player-music-2/"
+]
+```
+
+Al cargar, el player:
+
+1. Lee `music/tracks.json` local (paths relativos a `music/`)
+2. Lee `sources.json` y, por cada URL base, hace `fetch` a
+   `<base>/music/tracks.json` y prefija las URLs de archivo con `<base>music/`
+3. Combina todas las librerías en una sola lista
+
+CORS funciona porque GitHub Pages sirve con `Access-Control-Allow-Origin: *`.
+
+### Crear un repo secundario
+
+1. Crea `Mau-player-music-N` vacío en GitHub
+2. Clónalo, copia `add-song.sh` y crea `music/tracks.json` con `[]`
+3. Activa Pages: `gh api -X POST repos/maruizg25/Mau-player-music-N/pages -f "source[branch]=main" -f "source[path]=/"`
+4. Añade su URL Pages al `sources.json` de este repo, commit + push
+
+A partir de ahí, agrega música directamente en ese repo (mismos scripts)
+y el player principal la mostrará automáticamente.
 
 ## Troubleshooting
 

@@ -665,20 +665,40 @@ function fmt(s) {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-// Intentar cargar tracks.json (para GitHub Pages)
-async function loadFromJSON() {
+// Cargar tracks.json local + cualquier fuente externa declarada en sources.json.
+// sources.json es un array de URLs base (e.g. ["https://maruizg25.github.io/Mau-player-music-2/"]).
+// Cada fuente externa debe servir music/tracks.json con el mismo schema.
+async function loadOneSource(base, tracksUrl) {
   try {
-    const r = await fetch('music/tracks.json');
+    const r = await fetch(tracksUrl, { cache: 'no-store' });
     if (!r.ok) return;
     const data = await r.json();
     const loaded = data.map(t => ({
       title: t.title || t.file,
       artist: t.artist || 'Desconocido',
-      url: `music/${t.file}`,
+      url: base + 'music/' + t.file,
       duration: 0,
       blob: null
     }));
     addTracks(loaded);
+  } catch (e) {
+    console.warn('Fuente no disponible:', tracksUrl, e);
+  }
+}
+
+async function loadFromJSON() {
+  // 1) Librería local
+  await loadOneSource('', 'music/tracks.json');
+
+  // 2) Fuentes externas (otros repos)
+  try {
+    const sr = await fetch('sources.json', { cache: 'no-store' });
+    if (!sr.ok) return;
+    const sources = await sr.json();
+    for (const raw of sources) {
+      const base = raw.endsWith('/') ? raw : raw + '/';
+      await loadOneSource(base, base + 'music/tracks.json');
+    }
   } catch {}
 }
 
