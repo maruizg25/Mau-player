@@ -890,6 +890,174 @@ button { background: none; border: none; color: inherit; cursor: pointer; }
 #ctx-menu button.like:hover { color: var(--like); }
 #ctx-menu .sep { height: 1px; background: var(--muted2); margin: 4px 0; }
 
+/* ============== UP NEXT PANEL ============== */
+#upnext-panel {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  bottom: calc(var(--player-h) + 16px);
+  width: var(--queue);
+  background: var(--surface);
+  border: 1px solid var(--muted2);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(calc(100% + 32px));
+  transition: transform 280ms var(--easing);
+  overflow: hidden;
+}
+#upnext-panel.open { transform: translateX(0); }
+
+#upnext-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--muted2);
+}
+
+#upnext-head h3 {
+  font-family: 'Syne', sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.upnext-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--muted2);
+}
+
+.upnext-tab {
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: all var(--transition);
+}
+.upnext-tab.active { background: var(--accent-soft); color: var(--accent); }
+.upnext-tab:hover { color: var(--text); }
+.upnext-tab.active:hover { color: var(--accent); }
+
+.upnext-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px 10px;
+}
+
+.upnext-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.upnext-item:hover { background: var(--surface2); }
+.upnext-item .uc {
+  width: 36px; height: 36px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  color: rgba(255,255,255,0.95);
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  overflow: hidden;
+  position: relative;
+}
+.upnext-item .uc img { width: 100%; height: 100%; object-fit: cover; }
+.upnext-item .ui-info { flex: 1; min-width: 0; }
+.upnext-item .ui-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upnext-item .ui-artist {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upnext-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#btn-close-panel {
+  background: var(--surface2);
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+}
+#btn-close-panel:hover { color: var(--text); }
+
+/* Player bar buttons: queue + sleep */
+#btn-queue, #btn-sleep {
+  position: relative;
+}
+#btn-queue.active, #btn-sleep.active { color: var(--accent); }
+#sleep-badge {
+  position: absolute;
+  top: -2px; right: -2px;
+  background: var(--accent);
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 8px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: none;
+}
+#btn-sleep.active #sleep-badge { display: block; }
+
+/* Sleep timer modal layout */
+.sleep-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 8px 0;
+}
+.sleep-opt {
+  padding: 14px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--muted2);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--text2);
+}
+.sleep-opt:hover { background: var(--surface3); color: var(--text); }
+.sleep-opt.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.sleep-opt .v {
+  font-family: 'Syne', sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  display: block;
+}
+.sleep-opt .l { font-size: 11px; opacity: 0.7; margin-top: 4px; }
+
+/* Hero cover when album art loaded */
+#hero-cover img, #cover-art img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  position: absolute;
+  inset: 0;
+}
+#hero-cover.has-art .label, #cover-art.has-art .label { display: none; }
+#hero-cover, #cover-art { position: relative; }
+
 /* ============== TOAST ============== */
 #toast {
   position: fixed;

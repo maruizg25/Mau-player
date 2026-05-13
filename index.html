@@ -137,6 +137,13 @@
   </div>
 
   <div id="controls-right">
+    <button class="ctrl-btn" id="btn-queue" title="Cola (Q)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    </button>
+    <button class="ctrl-btn" id="btn-sleep" title="Sleep timer">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <span id="sleep-badge">--</span>
+    </button>
     <button class="ctrl-btn" id="btn-crossfade" title="Crossfade">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l10-10"/><path d="M17 17L7 7"/><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>
       <span id="crossfade-label">4s</span>
@@ -178,6 +185,8 @@
       <kbd>S</kbd><div class="label">Aleatorio (shuffle)</div>
       <kbd>R</kbd><div class="label">Repetir</div>
       <kbd>L</kbd><div class="label">Marcar / quitar favorito</div>
+      <kbd>Q</kbd><div class="label">Mostrar / ocultar cola</div>
+      <kbd>T</kbd><div class="label">Sleep timer</div>
       <kbd>/</kbd><div class="label">Buscar</div>
       <kbd>?</kbd><div class="label">Esta ayuda</div>
       <kbd>← →</kbd><div class="label">Adelantar / retroceder 5s</div>
@@ -191,12 +200,49 @@
   </div>
 </div>
 
+<!-- UP NEXT PANEL -->
+<aside id="upnext-panel">
+  <div id="upnext-head">
+    <h3>Cola</h3>
+    <button id="btn-close-panel" title="Cerrar">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="upnext-tabs">
+    <button class="upnext-tab active" data-tab="next">Up Next</button>
+    <button class="upnext-tab" data-tab="recent">Recientes</button>
+  </div>
+  <div class="upnext-list" id="upnext-list"></div>
+</aside>
+
+<!-- SLEEP TIMER MODAL -->
+<div class="modal-bg" id="sleep-modal">
+  <div class="modal">
+    <h3>Sleep timer</h3>
+    <p>Detener la reproducción después de…</p>
+    <div class="sleep-options" id="sleep-opts">
+      <div class="sleep-opt" data-min="15"><span class="v">15</span><div class="l">minutos</div></div>
+      <div class="sleep-opt" data-min="30"><span class="v">30</span><div class="l">minutos</div></div>
+      <div class="sleep-opt" data-min="45"><span class="v">45</span><div class="l">minutos</div></div>
+      <div class="sleep-opt" data-min="60"><span class="v">60</span><div class="l">minutos</div></div>
+      <div class="sleep-opt" data-min="90"><span class="v">90</span><div class="l">minutos</div></div>
+      <div class="sleep-opt" data-min="end"><span class="v">⏵</span><div class="l">Fin de canción</div></div>
+    </div>
+    <p style="font-size:12px;color:var(--muted)" id="sleep-status">No hay timer activo.</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btn-cancel-sleep">Cancelar timer</button>
+      <button class="btn ghost" data-close-modal="sleep-modal">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="ctx-menu"></div>
 <div id="toast"></div>
 
 <audio id="audio-a" preload="auto"></audio>
 <audio id="audio-b" preload="auto"></audio>
 
+<script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
