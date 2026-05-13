@@ -17,9 +17,12 @@ set -euo pipefail
 
 URL="${1:-}"
 LIMIT="${2:-0}"
+GENRE_OV="${3:-}"     # género opcional para todos los tracks; por defecto usa el nombre de la playlist
 
 if [ -z "$URL" ]; then
-  echo "Uso: $0 <url-spotify-playlist> [N]"
+  echo "Uso: $0 <url-spotify-playlist> [N] [\"Género\"]"
+  echo "  N: cuántos tracks bajar (0 = todos)"
+  echo "  Género: etiqueta para todos los tracks (default = nombre de la playlist)"
   exit 1
 fi
 
@@ -45,7 +48,10 @@ trap 'rm -f "$TMP_HTML" "$TMP_TSV"' EXIT
 echo "==> Leyendo metadata del embed de Spotify (playlist $PID)..."
 curl -sfL -A "Mozilla/5.0" "https://open.spotify.com/embed/playlist/$PID" -o "$TMP_HTML"
 
-python3 - "$TMP_HTML" "$TMP_TSV" <<'PY'
+PLAYLIST_NAME_FILE="$(mktemp)"
+trap 'rm -f "$TMP_HTML" "$TMP_TSV" "$PLAYLIST_NAME_FILE"' EXIT
+
+python3 - "$TMP_HTML" "$TMP_TSV" "$PLAYLIST_NAME_FILE" <<'PY'
 import re, json, sys
 html = open(sys.argv[1]).read()
 m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
@@ -64,6 +70,9 @@ except Exception as e:
 print(f"PLAYLIST_NAME={name}", file=sys.stderr)
 print(f"PLAYLIST_COUNT={len(tracks)}", file=sys.stderr)
 
+with open(sys.argv[3], 'w') as nf:
+    nf.write(name)
+
 with open(sys.argv[2], 'w') as out:
     for t in tracks:
         # subtitle usa NBSP como separador, normalizamos
@@ -74,6 +83,12 @@ with open(sys.argv[2], 'w') as out:
             continue
         out.write(f"{subtitle}\t{title}\t{primary}\n")
 PY
+
+# Determinar género global
+if [ -z "$GENRE_OV" ]; then
+  GENRE_OV="$(cat "$PLAYLIST_NAME_FILE" 2>/dev/null || echo 'Otros')"
+fi
+echo "==> Género asignado: $GENRE_OV"
 
 TOTAL=$(wc -l < "$TMP_TSV" | xargs)
 [ "$TOTAL" -eq 0 ] && { echo "No se extrajo ningún track." >&2; exit 1; }
@@ -92,7 +107,7 @@ while IFS=$'\t' read -r subtitle title primary; do
   query="$primary $title"
   echo
   echo "[$i/$TOTAL] $artist — $title"
-  OUT=$("$ADD_SONG" "ytsearch1:$query" "$title" "$artist" 2>&1)
+  OUT=$("$ADD_SONG" "ytsearch1:$query" "$title" "$artist" "$GENRE_OV" 2>&1)
   if   echo "$OUT" | grep -q "^  ok:";   then ok=$((ok+1));
   elif echo "$OUT" | grep -q "^  skip:"; then skip=$((skip+1));
   else                                          fail=$((fail+1));

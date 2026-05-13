@@ -19,15 +19,18 @@ set -euo pipefail
 URL="${1:-}"
 ARG2="${2:-}"
 ARG3="${3:-}"
+ARG4="${4:-}"        # género opcional (4° posicional)
 
 if [ -z "$URL" ]; then
   cat <<EOF
 Uso:
-  $0 <url-video>                              # un solo video
-  $0 <url-video> "Título"                     # forzar título
-  $0 <url-video> "Título" "Artista"           # forzar título y artista
-  $0 <url-playlist>                           # toda la playlist
-  $0 <url-playlist> N                         # primeros N tracks
+  $0 <url-video>                                          # un solo video
+  $0 <url-video> "Título"                                 # forzar título
+  $0 <url-video> "Título" "Artista"                       # forzar título y artista
+  $0 <url-video> "Título" "Artista" "Género"              # también género
+  $0 <url-playlist>                                       # toda la playlist
+  $0 <url-playlist> N                                     # primeros N tracks
+  $0 <url-playlist> N "" "" "Género"                      # con género
 EOF
   exit 1
 fi
@@ -68,6 +71,7 @@ add_one() {
   local url="$1"
   local title_ov="${2:-}"
   local artist_ov="${3:-}"
+  local genre_ov="${4:-Otros}"
 
   local meta title artist
   meta="$(yt-dlp --dump-single-json --no-warnings "$url" 2>/dev/null || true)"
@@ -123,11 +127,11 @@ add_one() {
 
   local tmp
   tmp="$(mktemp)"
-  jq --arg file "$filename" --arg title "$title_clean" --arg artist "$artist" \
-     '. + [{file: $file, title: $title, artist: $artist}]' \
+  jq --arg file "$filename" --arg title "$title_clean" --arg artist "$artist" --arg genre "$genre_ov" \
+     '. + [{file: $file, title: $title, artist: $artist, genre: $genre}]' \
      "$TRACKS" > "$tmp" && mv "$tmp" "$TRACKS"
 
-  echo "  ok: $artist — $title_clean"
+  echo "  ok: $artist — $title_clean [$genre_ov]"
   return 0
 }
 
@@ -154,7 +158,7 @@ if echo "$URL" | grep -qE '[?&]list=|/playlist\?'; then
     echo
     echo "[$i/$TOTAL] $u"
     rc=0
-    add_one "$u" || rc=$?
+    add_one "$u" "" "" "$ARG4" || rc=$?
     case "$rc" in
       0) ok=$((ok+1));;
       2) skip=$((skip+1));;
@@ -172,7 +176,7 @@ fi
 # Video único
 echo "==> $URL"
 rc=0
-add_one "$URL" "$ARG2" "$ARG3" || rc=$?
+add_one "$URL" "$ARG2" "$ARG3" "$ARG4" || rc=$?
 case "$rc" in
   0)
     COUNT="$(jq 'length' "$TRACKS")"
