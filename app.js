@@ -1,0 +1,883 @@
+'use strict';
+
+// ============================================================
+// MauPlayer — app.js
+// Reproductor estático con multi-source, géneros, favoritos,
+// crossfade, visualizador, atajos de teclado y menú contextual.
+// ============================================================
+
+// ============== STATE ==============
+const $ = (id) => document.getElementById(id);
+const audioA = $('audio-a');
+const audioB = $('audio-b');
+let audio = audioA;
+let audioOther = audioB;
+audioA.crossOrigin = 'anonymous';
+audioB.crossOrigin = 'anonymous';
+
+let tracks = [];
+let viewTracks = [];
+let currentIndex = -1;
+let shuffle = false;
+let repeat = false;
+let dragging = false;
+let activeGenre = 'all';
+let searchQuery = '';
+let sortBy = null;       // 'title' | 'artist' | 'genre' | null (default order)
+let sortDir = 'asc';     // 'asc' | 'desc'
+let hidden = new Set(JSON.parse(localStorage.getItem('mau-hidden') || '[]'));
+let liked = new Set(JSON.parse(localStorage.getItem('mau-liked') || '[]'));
+
+// Crossfade
+const CROSSFADE_OPTIONS = [0, 3, 5, 8, 12];
+let crossfadeSec = parseInt(localStorage.getItem('mau-crossfade') ?? '4', 10);
+let fadingOut = false;
+
+// Web Audio (visualizer)
+let audioCtx = null;
+let analyser = null;
+const sourceNodes = new WeakMap();
+let vizActive = false;
+
+const GENRE_EMOJI = {
+  'Hip Hop': '🎤',
+  'Latin': '🌶',
+  'Electronic': '🎛',
+  'Rock': '🎸',
+  'Pop': '✨',
+  'R&B': '💜',
+  'Jazz': '🎷',
+  'Reggaeton': '🔥',
+  'Indie': '🌿',
+  'Classical': '🎻',
+  'Locales': '💾',
+  'Otros': '🎵',
+};
+
+// ============== UTIL ==============
+const trackKey = (t) => `${t.source}::${t.file}`;
+
+function fmt(s) {
+  if (!s || isNaN(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function gradient(seed) {
+  const h1 = hashStr(seed) % 360;
+  const h2 = (h1 + 40 + (hashStr(seed + 'x') % 90)) % 360;
+  return `linear-gradient(135deg, hsl(${h1}, 65%, 45%), hsl(${h2}, 60%, 28%))`;
+}
+
+function initial(s) {
+  const t = (s || '').trim();
+  return t ? t.charAt(0).toUpperCase() : '?';
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
+}
+
+function toast(msg, ms = 2200) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+function persist(key, val) { localStorage.setItem(key, val); }
+function persistHidden() { persist('mau-hidden', JSON.stringify([...hidden])); }
+function persistLiked() { persist('mau-liked', JSON.stringify([...liked])); }
+
+// ============== DATA LOAD ==============
+async function loadOneSource(base, tracksUrl, sourceLabel) {
+  try {
+    const r = await fetch(tracksUrl, { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    data.forEach((t, i) => {
+      tracks.push({
+        title: t.title || t.file,
+        artist: t.artist || 'Desconocido',
+        genre: t.genre || 'Otros',
+        url: base + 'music/' + encodeURIComponent(t.file),
+        file: t.file,
+        source: sourceLabel,
+        order: tracks.length,
+        duration: 0,
+        blob: null
+      });
+    });
+  } catch (e) {
+    console.warn('Fuente fallida:', tracksUrl, e);
+  }
+}
+
+async function loadAll() {
+  await loadOneSource('', 'music/tracks.json', 'local');
+  try {
+    const sr = await fetch('sources.json', { cache: 'no-store' });
+    if (sr.ok) {
+      const sources = await sr.json();
+      for (const raw of sources) {
+        const base = raw.endsWith('/') ? raw : raw + '/';
+        await loadOneSource(base, base + 'music/tracks.json', base);
+      }
+    }
+  } catch {}
+  computeAndRender();
+  restoreLastPlayed();
+}
+
+function restoreLastPlayed() {
+  const last = localStorage.getItem('mau-last');
+  if (!last) return;
+  try {
+    const { key, time } = JSON.parse(last);
+    const idx = tracks.findIndex(t => trackKey(t) === key);
+    if (idx >= 0) {
+      currentIndex = idx;
+      const t = tracks[idx];
+      audio.src = t.url;
+      audio.volume = userVolume();
+      updateNowPlayingUI(t);
+      audio.addEventListener('loadedmetadata', () => {
+        try { audio.currentTime = time || 0; } catch {}
+      }, { once: true });
+      renderList();
+    }
+  } catch {}
+}
+
+// ============== FILTERS & RENDER ==============
+function computeAndRender() {
+  renderSidebar();
+  applyFilter();
+  updateHiddenBanner();
+}
+
+function renderSidebar() {
+  const counts = { all: 0 };
+  const likedCount = [...liked].filter(k => tracks.some(t => trackKey(t) === k && !hidden.has(t.file))).length;
+
+  for (const t of tracks) {
+    if (hidden.has(t.file)) continue;
+    counts.all++;
+    counts[t.genre] = (counts[t.genre] || 0) + 1;
+  }
+
+  const genres = Object.keys(counts).filter(k => k !== 'all').sort((a, b) => counts[b] - counts[a]);
+  const items = [
+    { key: 'all', label: 'Todas', emoji: '🎧', count: counts.all },
+    ...(likedCount > 0 ? [{ key: '__liked', label: 'Favoritos', emoji: '❤️', count: likedCount }] : []),
+    ...genres.map(g => ({ key: g, label: g, emoji: GENRE_EMOJI[g] || '🎵', count: counts[g] }))
+  ];
+
+  $('genre-list').innerHTML = items.map(it => `
+    <div class="genre-item ${activeGenre === it.key ? 'active' : ''}" data-key="${escapeHtml(it.key)}">
+      <div class="genre-emoji" style="background:${gradient(it.label)}">${it.emoji}</div>
+      <div class="genre-meta">
+        <div class="genre-name">${escapeHtml(it.label)}</div>
+        <div class="genre-count">${it.count} ${it.count === 1 ? 'canción' : 'canciones'}</div>
+      </div>
+    </div>
+  `).join('');
+
+  $('genre-list').querySelectorAll('.genre-item').forEach(el => {
+    el.addEventListener('click', () => {
+      activeGenre = el.dataset.key;
+      renderSidebar();
+      applyFilter();
+      $('sidebar').classList.remove('open');
+    });
+  });
+}
+
+function compareTracks(a, b) {
+  const dir = sortDir === 'asc' ? 1 : -1;
+  if (!sortBy) return (a.order - b.order) * dir;
+  const va = (a[sortBy] || '').toLowerCase();
+  const vb = (b[sortBy] || '').toLowerCase();
+  return va < vb ? -dir : va > vb ? dir : 0;
+}
+
+function applyFilter() {
+  const q = searchQuery.toLowerCase();
+  viewTracks = tracks.filter(t => {
+    if (hidden.has(t.file)) return false;
+    if (activeGenre === '__liked') {
+      if (!liked.has(trackKey(t))) return false;
+    } else if (activeGenre !== 'all' && t.genre !== activeGenre) {
+      return false;
+    }
+    if (q && !t.title.toLowerCase().includes(q) && !t.artist.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  viewTracks.sort(compareTracks);
+  renderHero();
+  renderList();
+}
+
+function renderHero() {
+  const total = viewTracks.length;
+  const totSec = viewTracks.reduce((a, t) => a + (t.duration || 0), 0);
+  let title, tag, seed;
+  if (activeGenre === 'all') {
+    title = 'Tu librería';
+    tag = 'Todas las canciones';
+    seed = 'all-' + tracks.length;
+  } else if (activeGenre === '__liked') {
+    title = 'Favoritos';
+    tag = 'Tus canciones marcadas';
+    seed = 'liked';
+  } else {
+    title = activeGenre;
+    tag = 'Género';
+    seed = activeGenre;
+  }
+  $('hero-title').textContent = title;
+  $('hero-tag').textContent = tag;
+  $('hero-cover').style.background = gradient(seed);
+  $('hero-cover').textContent = (activeGenre === '__liked' ? '❤' : initial(title));
+  const durTxt = totSec > 0 ? ` · ~${Math.round(totSec / 60)} min` : '';
+  $('hero-sub').innerHTML = `<strong>${total}</strong> ${total === 1 ? 'canción' : 'canciones'}${durTxt}` +
+    (searchQuery ? ` · búsqueda: "${escapeHtml(searchQuery)}"` : '');
+}
+
+function renderList() {
+  const empty = $('empty-state');
+  const list = $('track-list');
+  empty.classList.toggle('hidden', viewTracks.length > 0);
+  if (viewTracks.length === 0) { list.innerHTML = ''; return; }
+
+  const playing = currentIndex >= 0 ? tracks[currentIndex] : null;
+  const paused = audio.paused;
+
+  list.innerHTML = viewTracks.map((t, i) => {
+    const isPlaying = playing && trackKey(playing) === trackKey(t);
+    const isLiked = liked.has(trackKey(t));
+    const dur = t.duration ? fmt(t.duration) : '—';
+    return `
+      <div class="track-row ${isPlaying ? 'playing' : ''} ${isPlaying && paused ? 'paused' : ''}"
+           data-key="${escapeHtml(trackKey(t))}">
+        <div class="track-num">
+          <span class="num">${i + 1}</span>
+          <svg class="play-icon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <div class="bars"><span></span><span></span><span></span></div>
+        </div>
+        <div class="track-cover" style="background:${gradient(t.title || t.file)}">${initial(t.title)}</div>
+        <div class="track-info">
+          <div class="track-name">${escapeHtml(t.title)}</div>
+          <div class="track-artist">${escapeHtml(t.artist)}</div>
+        </div>
+        <div class="track-col artist">${escapeHtml(t.artist)}</div>
+        <div class="track-col genre"><span class="track-genre">${escapeHtml(t.genre)}</span></div>
+        <div class="track-duration">${dur}</div>
+        <div class="track-row-actions">
+          <button class="icon-mini ${isLiked ? 'liked always' : ''}" data-action="like" title="Favorito">
+            <svg viewBox="0 0 24 24" ${isLiked ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2"'}>
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            </svg>
+          </button>
+          <button class="icon-mini danger" data-action="hide" title="Quitar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  list.querySelectorAll('.track-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      const btn = e.target.closest('.icon-mini');
+      if (btn) {
+        e.stopPropagation();
+        if (btn.dataset.action === 'hide') hideTrack(row);
+        else if (btn.dataset.action === 'like') likeTrackByKey(row.dataset.key);
+        return;
+      }
+      const key = row.dataset.key;
+      const idx = tracks.findIndex(t => trackKey(t) === key);
+      if (idx >= 0) playTrack(idx);
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openContextMenu(e, row.dataset.key);
+    });
+  });
+}
+
+function hideTrack(rowEl) {
+  const key = rowEl.dataset.key;
+  const t = tracks.find(x => trackKey(x) === key);
+  if (!t) return;
+  rowEl.classList.add('removing');
+  setTimeout(() => {
+    hidden.add(t.file);
+    persistHidden();
+    computeAndRender();
+    toast('Canción oculta. Banner amarillo arriba para borrar definitivamente.');
+  }, 220);
+}
+
+function likeTrackByKey(key) {
+  if (liked.has(key)) liked.delete(key); else liked.add(key);
+  persistLiked();
+  renderSidebar();
+  renderList();
+  // Update like icon en now-playing
+  const cur = currentIndex >= 0 ? tracks[currentIndex] : null;
+  if (cur && trackKey(cur) === key) updateLikeNP(cur);
+}
+
+function updateHiddenBanner() {
+  const n = hidden.size;
+  $('hidden-banner').classList.toggle('show', n > 0);
+  $('hidden-count').textContent = n;
+}
+
+// ============== PLAYBACK ==============
+function userVolume() { return parseFloat($('volume').value) / 100; }
+
+function updateNowPlayingUI(t) {
+  $('np-title').textContent = t.title;
+  $('np-artist').textContent = t.artist;
+  const cover = $('cover-art');
+  cover.style.background = gradient(t.title || t.file);
+  const phEl = cover.querySelector('.ph');
+  if (phEl) phEl.remove();
+  cover.querySelector('.label')?.remove();
+  const label = document.createElement('span');
+  label.className = 'label';
+  label.textContent = initial(t.title);
+  cover.appendChild(label);
+  // Mantén el canvas del visualizer
+  if (!cover.querySelector('#viz')) {
+    const c = document.createElement('canvas');
+    c.id = 'viz';
+    cover.appendChild(c);
+  }
+  document.title = `${t.title} — MauPlayer`;
+  updateLikeNP(t);
+}
+
+function updateLikeNP(t) {
+  const btn = $('btn-like-np');
+  btn.classList.toggle('liked', liked.has(trackKey(t)));
+}
+
+function playTrack(idx) {
+  if (idx < 0 || idx >= tracks.length) return;
+  if (fadingOut) {
+    audioOther.pause();
+    audioOther.currentTime = 0;
+    fadingOut = false;
+  }
+  currentIndex = idx;
+  const t = tracks[idx];
+  audio.src = t.url;
+  audio.volume = userVolume();
+  updateNowPlayingUI(t);
+  audio.play().then(() => initAudioCtx()).catch(() => {});
+  renderList();
+}
+
+function pickNextIndex() {
+  if (!viewTracks.length) return -1;
+  const cur = currentIndex >= 0 ? tracks[currentIndex] : null;
+  const viewIdx = cur ? viewTracks.findIndex(t => trackKey(t) === trackKey(cur)) : -1;
+  const nextT = shuffle
+    ? viewTracks[Math.floor(Math.random() * viewTracks.length)]
+    : viewTracks[(viewIdx + 1) % viewTracks.length];
+  return tracks.findIndex(t => trackKey(t) === trackKey(nextT));
+}
+
+function startCrossfade() {
+  if (fadingOut || crossfadeSec <= 0 || repeat) return;
+  const nextIdx = pickNextIndex();
+  if (nextIdx < 0 || nextIdx === currentIndex) return;
+  const nextT = tracks[nextIdx];
+
+  fadingOut = true;
+  audioOther.src = nextT.url;
+  audioOther.volume = 0;
+  const p = audioOther.play();
+  if (p && p.catch) p.catch(() => { fadingOut = false; });
+
+  const uVol = userVolume();
+  const durMs = crossfadeSec * 1000;
+  const start = performance.now();
+  const fromAudio = audio;
+  const toAudio = audioOther;
+
+  currentIndex = nextIdx;
+  updateNowPlayingUI(nextT);
+  renderList();
+
+  function tick(now) {
+    if (!fadingOut) return;
+    const elapsed = Math.min(1, (now - start) / durMs);
+    fromAudio.volume = uVol * (1 - elapsed);
+    toAudio.volume = uVol * elapsed;
+    if (elapsed < 1) requestAnimationFrame(tick);
+    else {
+      fromAudio.pause();
+      try { fromAudio.currentTime = 0; } catch {}
+      fromAudio.volume = uVol;
+      audio = toAudio;
+      audioOther = fromAudio;
+      fadingOut = false;
+      // Reconectar visualizer al nuevo audio activo
+      connectAnalyserToActive();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+function togglePlay() {
+  if (!tracks.length) return;
+  if (currentIndex < 0) {
+    const firstVisible = viewTracks[0];
+    if (!firstVisible) return;
+    const idx = tracks.findIndex(t => trackKey(t) === trackKey(firstVisible));
+    return playTrack(idx);
+  }
+  audio.paused ? audio.play() : audio.pause();
+}
+
+function nextTrack() {
+  const idx = pickNextIndex();
+  if (idx >= 0) playTrack(idx);
+}
+
+function prevTrack() {
+  if (!viewTracks.length) return;
+  if (audio.currentTime > 3 && !fadingOut) { audio.currentTime = 0; return; }
+  const cur = currentIndex >= 0 ? tracks[currentIndex] : null;
+  let viewIdx = cur ? viewTracks.findIndex(t => trackKey(t) === trackKey(cur)) : 0;
+  const prev = viewTracks[(viewIdx - 1 + viewTracks.length) % viewTracks.length];
+  const idx = tracks.findIndex(t => trackKey(t) === trackKey(prev));
+  playTrack(idx);
+}
+
+// ============== AUDIO EVENTS ==============
+function updatePlayBtn(playing) {
+  $('icon-play').classList.toggle('hidden', playing);
+  $('icon-pause').classList.toggle('hidden', !playing);
+}
+
+[audioA, audioB].forEach(el => {
+  el.addEventListener('play', () => {
+    if (el === audio) { updatePlayBtn(true); renderList(); startViz(); }
+  });
+  el.addEventListener('pause', () => {
+    if (el === audio && !fadingOut) { updatePlayBtn(false); renderList(); stopViz(); }
+  });
+  el.addEventListener('timeupdate', () => {
+    if (el !== audio || dragging) return;
+    const dur = audio.duration || 0;
+    const pct = dur ? (audio.currentTime / dur) * 100 : 0;
+    $('progress').value = pct;
+    $('progress').style.setProperty('--pct', pct + '%');
+    $('time-cur').textContent = fmt(audio.currentTime);
+
+    // Persist position (cada ~5s para no saturar localStorage)
+    if (Math.floor(audio.currentTime) % 5 === 0 && currentIndex >= 0) {
+      persist('mau-last', JSON.stringify({ key: trackKey(tracks[currentIndex]), time: audio.currentTime }));
+    }
+
+    if (!fadingOut && crossfadeSec > 0 && !repeat && dur > crossfadeSec + 1) {
+      const remaining = dur - audio.currentTime;
+      if (remaining > 0 && remaining <= crossfadeSec) startCrossfade();
+    }
+  });
+  el.addEventListener('loadedmetadata', () => {
+    if (el !== audio) return;
+    $('time-total').textContent = fmt(audio.duration);
+    if (currentIndex >= 0) tracks[currentIndex].duration = audio.duration;
+  });
+  el.addEventListener('ended', () => {
+    if (el !== audio || fadingOut) return;
+    if (repeat) { audio.currentTime = 0; audio.play(); }
+    else nextTrack();
+  });
+});
+
+// ============== CONTROLS ==============
+$('btn-play').addEventListener('click', togglePlay);
+$('btn-next').addEventListener('click', nextTrack);
+$('btn-prev').addEventListener('click', prevTrack);
+$('btn-shuffle').addEventListener('click', () => {
+  shuffle = !shuffle;
+  $('btn-shuffle').classList.toggle('active', shuffle);
+  toast(shuffle ? 'Aleatorio activado' : 'Aleatorio desactivado');
+});
+$('btn-repeat').addEventListener('click', () => {
+  repeat = !repeat;
+  $('btn-repeat').classList.toggle('active', repeat);
+  toast(repeat ? 'Repetir activado' : 'Repetir desactivado');
+});
+
+$('btn-like-np').addEventListener('click', () => {
+  if (currentIndex < 0) return;
+  likeTrackByKey(trackKey(tracks[currentIndex]));
+});
+
+$('btn-play-all').addEventListener('click', () => {
+  if (!viewTracks.length) return;
+  shuffle = false;
+  $('btn-shuffle').classList.remove('active');
+  const idx = tracks.findIndex(t => trackKey(t) === trackKey(viewTracks[0]));
+  playTrack(idx);
+});
+
+$('btn-shuffle-all').addEventListener('click', () => {
+  if (!viewTracks.length) return;
+  shuffle = true;
+  $('btn-shuffle').classList.add('active');
+  const idx = tracks.findIndex(t => trackKey(t) === trackKey(viewTracks[Math.floor(Math.random() * viewTracks.length)]));
+  playTrack(idx);
+});
+
+// Sortable columns
+document.querySelectorAll('#track-list-header .sortable').forEach(el => {
+  el.addEventListener('click', () => {
+    const col = el.dataset.col;
+    if (sortBy === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    else { sortBy = col; sortDir = 'asc'; }
+    document.querySelectorAll('#track-list-header .sortable').forEach(e2 => {
+      e2.classList.remove('sorted', 'asc', 'desc');
+    });
+    el.classList.add('sorted', sortDir);
+    applyFilter();
+  });
+});
+
+// ============== PROGRESS / VOLUME ==============
+$('progress').addEventListener('mousedown', () => dragging = true);
+$('progress').addEventListener('input', () => {
+  const pct = $('progress').value;
+  $('progress').style.setProperty('--pct', pct + '%');
+  $('time-cur').textContent = fmt((pct / 100) * (audio.duration || 0));
+});
+$('progress').addEventListener('change', () => {
+  dragging = false;
+  if (audio.duration) audio.currentTime = ($('progress').value / 100) * audio.duration;
+});
+
+const savedVol = parseFloat(localStorage.getItem('mau-volume') || '0.8');
+audioA.volume = savedVol;
+audioB.volume = savedVol;
+$('volume').value = savedVol * 100;
+$('volume').style.setProperty('--vol', (savedVol * 100) + '%');
+
+$('volume').addEventListener('input', () => {
+  const v = $('volume').value / 100;
+  if (!fadingOut) { audioA.volume = v; audioB.volume = v; }
+  $('volume').style.setProperty('--vol', $('volume').value + '%');
+  persist('mau-volume', v.toString());
+});
+
+$('vol-icon').addEventListener('click', () => {
+  if (audio.volume > 0) {
+    audio.dataset.prev = audio.volume;
+    $('volume').value = 0;
+  } else {
+    $('volume').value = (parseFloat(audio.dataset.prev || '0.8')) * 100;
+  }
+  $('volume').dispatchEvent(new Event('input'));
+});
+
+// ============== CROSSFADE ==============
+function updateCrossfadeLabel() {
+  $('crossfade-label').textContent = crossfadeSec === 0 ? 'off' : crossfadeSec + 's';
+  $('btn-crossfade').classList.toggle('active', crossfadeSec > 0);
+  $('btn-crossfade').title = `Crossfade: ${crossfadeSec === 0 ? 'desactivado' : crossfadeSec + ' segundos'} (click para cambiar)`;
+}
+updateCrossfadeLabel();
+
+$('btn-crossfade').addEventListener('click', () => {
+  const i = CROSSFADE_OPTIONS.indexOf(crossfadeSec);
+  crossfadeSec = CROSSFADE_OPTIONS[(i + 1) % CROSSFADE_OPTIONS.length];
+  persist('mau-crossfade', String(crossfadeSec));
+  updateCrossfadeLabel();
+  toast(crossfadeSec === 0 ? 'Crossfade desactivado' : `Crossfade: ${crossfadeSec}s`);
+});
+
+// ============== SEARCH ==============
+$('search').addEventListener('input', (e) => {
+  searchQuery = e.target.value.trim();
+  applyFilter();
+});
+
+// ============== HIDDEN / DELETE ==============
+$('btn-restore-hidden').addEventListener('click', () => {
+  hidden.clear();
+  persistHidden();
+  computeAndRender();
+  toast('Canciones restauradas');
+});
+
+$('btn-export-deletions').addEventListener('click', () => {
+  const groups = {};
+  for (const file of hidden) {
+    const t = tracks.find(x => x.file === file);
+    if (!t) continue;
+    const key = t.source === 'local' ? 'repo-principal' : t.source;
+    (groups[key] = groups[key] || []).push(file);
+  }
+  if (Object.keys(groups).length === 0) { toast('No hay canciones para borrar'); return; }
+
+  const lines = ['#!/usr/bin/env bash',
+    '# Generado por MauPlayer. Ejecuta esto en cada repo correspondiente y luego haz git push.', ''];
+  for (const [src, files] of Object.entries(groups)) {
+    lines.push(`# === ${src} ===`);
+    if (src === 'repo-principal') lines.push('# cd /ruta/a/Mau-player && bash este-script.sh');
+    else lines.push(`# cd /ruta/a/<repo correspondiente a ${src}> && bash este-script.sh`);
+    const args = files.map(f => `"${f.replace(/"/g, '\\"')}"`).join(' \\\n  ');
+    lines.push(`./remove-song.sh \\\n  ${args}`);
+    lines.push('');
+  }
+  lines.push('# Cuando termines:');
+  lines.push('# git add -A && git commit -m "remove: tracks ocultos desde el player" && git push');
+
+  $('delete-script').textContent = lines.join('\n');
+  showModal('delete-modal');
+});
+
+// ============== CONTEXT MENU ==============
+function openContextMenu(e, key) {
+  const t = tracks.find(x => trackKey(x) === key);
+  if (!t) return;
+  const m = $('ctx-menu');
+  const isLiked = liked.has(key);
+  m.innerHTML = `
+    <div class="ctx-header"><strong>${escapeHtml(t.title)}</strong>${escapeHtml(t.artist)}</div>
+    <button data-action="play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>Reproducir ahora</button>
+    <button class="like" data-action="like"><svg viewBox="0 0 24 24" ${isLiked ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2"'}><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>${isLiked ? 'Quitar de favoritos' : 'Marcar como favorito'}</button>
+    <button data-action="copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar "Artista — Título"</button>
+    <div class="sep"></div>
+    <button class="danger" data-action="hide"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>Quitar de la lista</button>
+  `;
+  m.classList.add('show');
+  // Posicionar
+  const w = 240, h = m.offsetHeight || 180;
+  const x = Math.min(e.clientX, window.innerWidth - w - 8);
+  const y = Math.min(e.clientY, window.innerHeight - h - 8);
+  m.style.left = x + 'px';
+  m.style.top = y + 'px';
+
+  m.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      const a = b.dataset.action;
+      closeContextMenu();
+      if (a === 'play') {
+        const idx = tracks.findIndex(x => trackKey(x) === key);
+        if (idx >= 0) playTrack(idx);
+      } else if (a === 'like') {
+        likeTrackByKey(key);
+      } else if (a === 'copy') {
+        navigator.clipboard.writeText(`${t.artist} — ${t.title}`).catch(() => {});
+        toast('Copiado');
+      } else if (a === 'hide') {
+        const row = document.querySelector(`.track-row[data-key="${CSS.escape(key)}"]`);
+        if (row) hideTrack(row);
+      }
+    });
+  });
+}
+
+function closeContextMenu() { $('ctx-menu').classList.remove('show'); }
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#ctx-menu')) closeContextMenu();
+});
+window.addEventListener('blur', closeContextMenu);
+window.addEventListener('resize', closeContextMenu);
+$('main').addEventListener('scroll', closeContextMenu);
+
+// ============== MODAL ==============
+function showModal(id) { $(id).classList.add('show'); }
+function hideModal(id) { $(id).classList.remove('show'); }
+
+document.querySelectorAll('.modal-bg').forEach(m => {
+  m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('show'); });
+});
+document.querySelectorAll('[data-close-modal]').forEach(b => {
+  b.addEventListener('click', () => hideModal(b.dataset.closeModal));
+});
+$('btn-copy-script')?.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('delete-script').textContent); toast('Script copiado'); }
+  catch { toast('No se pudo copiar'); }
+});
+
+// Help
+$('btn-help').addEventListener('click', () => showModal('help-modal'));
+
+// ============== FILE PICKER / DRAG-DROP ==============
+function handleFiles(files) {
+  const added = [];
+  Array.from(files).forEach(f => {
+    if (!f.type.includes('audio')) return;
+    const url = URL.createObjectURL(f);
+    const name = f.name.replace(/\.mp3$/i, '');
+    const parts = name.split(' - ');
+    added.push({
+      title: parts.length > 1 ? parts.slice(1).join(' - ') : name,
+      artist: parts.length > 1 ? parts[0] : 'Local',
+      genre: 'Locales',
+      url, file: f.name, source: 'local-session',
+      order: tracks.length, duration: 0, blob: url
+    });
+  });
+  if (added.length) {
+    tracks.push(...added);
+    computeAndRender();
+    toast(`${added.length} archivo(s) agregados a la sesión`);
+  }
+}
+
+$('file-input').addEventListener('change', e => handleFiles(e.target.files));
+
+document.addEventListener('dragenter', e => { e.preventDefault(); $('drop-zone').classList.add('active'); });
+$('drop-zone').addEventListener('dragleave', e => {
+  if (!$('drop-zone').contains(e.relatedTarget)) $('drop-zone').classList.remove('active');
+});
+$('drop-zone').addEventListener('dragover', e => e.preventDefault());
+$('drop-zone').addEventListener('drop', e => {
+  e.preventDefault();
+  $('drop-zone').classList.remove('active');
+  handleFiles(e.dataTransfer.files);
+});
+
+// ============== KEYBOARD ==============
+document.addEventListener('keydown', e => {
+  if (e.target === $('search')) {
+    if (e.key === 'Escape') { e.target.value = ''; searchQuery = ''; applyFilter(); e.target.blur(); }
+    return;
+  }
+  if (document.querySelector('.modal-bg.show')) {
+    if (e.key === 'Escape') document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show'));
+    return;
+  }
+  if ($('ctx-menu').classList.contains('show') && e.key === 'Escape') { closeContextMenu(); return; }
+
+  switch (e.key) {
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'n': case 'N': nextTrack(); break;
+    case 'p': case 'P': prevTrack(); break;
+    case 's': case 'S': $('btn-shuffle').click(); break;
+    case 'r': case 'R': $('btn-repeat').click(); break;
+    case 'l': case 'L':
+      if (currentIndex >= 0) likeTrackByKey(trackKey(tracks[currentIndex]));
+      break;
+    case '/': e.preventDefault(); $('search').focus(); break;
+    case '?': showModal('help-modal'); break;
+    case 'ArrowRight':
+      if (audio.duration) audio.currentTime = Math.min(audio.duration, audio.currentTime + 5);
+      break;
+    case 'ArrowLeft':
+      if (audio.duration) audio.currentTime = Math.max(0, audio.currentTime - 5);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      $('volume').value = Math.min(100, parseFloat($('volume').value) + 5);
+      $('volume').dispatchEvent(new Event('input'));
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      $('volume').value = Math.max(0, parseFloat($('volume').value) - 5);
+      $('volume').dispatchEvent(new Event('input'));
+      break;
+  }
+});
+
+// Mobile sidebar toggle
+$('sidebar-toggle').addEventListener('click', () => {
+  $('sidebar').classList.toggle('open');
+});
+
+// ============== VISUALIZER ==============
+function initAudioCtx() {
+  if (audioCtx) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 64;
+    analyser.smoothingTimeConstant = 0.8;
+    analyser.connect(audioCtx.destination);
+    connectAnalyserToActive();
+  } catch (e) { console.warn('AudioContext no disponible', e); }
+}
+
+function connectAnalyserToActive() {
+  if (!audioCtx || !analyser) return;
+  [audioA, audioB].forEach(el => {
+    if (!sourceNodes.has(el)) {
+      try {
+        const src = audioCtx.createMediaElementSource(el);
+        src.connect(analyser);
+        sourceNodes.set(el, src);
+      } catch (e) {
+        // Si falla (e.g. CORS), el visualizer queda inactivo silenciosamente
+        console.warn('No se pudo crear source node:', e);
+      }
+    }
+  });
+}
+
+function startViz() {
+  if (vizActive) return;
+  vizActive = true;
+  const canvas = $('viz');
+  if (!canvas) return;
+  canvas.classList.add('on');
+  const ctx = canvas.getContext('2d');
+  const data = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
+
+  function draw() {
+    if (!vizActive) return;
+    const c = $('viz');
+    if (!c) { vizActive = false; return; }
+    const rect = c.getBoundingClientRect();
+    if (c.width !== rect.width * devicePixelRatio) {
+      c.width = rect.width * devicePixelRatio;
+      c.height = rect.height * devicePixelRatio;
+    }
+    const w = c.width, h = c.height;
+    const cx = ctx;
+    cx.clearRect(0, 0, w, h);
+
+    if (analyser && data) {
+      analyser.getByteFrequencyData(data);
+      const bars = 16;
+      const bw = w / bars;
+      cx.fillStyle = 'rgba(255,255,255,0.18)';
+      for (let i = 0; i < bars; i++) {
+        const v = data[Math.floor(i * data.length / bars)] / 255;
+        const bh = v * h * 0.85;
+        cx.fillRect(i * bw + 2, h - bh, bw - 4, bh);
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+function stopViz() {
+  vizActive = false;
+  const c = $('viz');
+  if (c) c.classList.remove('on');
+}
+
+// ============== INIT ==============
+loadAll();
